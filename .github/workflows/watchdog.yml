@@ -53,13 +53,16 @@ jobs:
           was_down = "down" in labels
 
           def telegram(text):
+              token = os.environ.get("TELEGRAM_BOT_TOKEN")
+              if not token:
+                  return
               payload = urllib.parse.urlencode({
                   "chat_id": os.environ["CHAT_ID"],
                   "message_thread_id": os.environ["THREAD_ID"],
                   "text": text,
                   "disable_web_page_preview": "true",
               }).encode()
-              url = f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage"
+              url = f"https://api.telegram.org/bot{token}/sendMessage"
               with urllib.request.urlopen(urllib.request.Request(url, data=payload, method="POST"), timeout=20) as r:
                   response = json.load(r)
                   if not response.get("ok"):
@@ -67,13 +70,13 @@ jobs:
 
           if stale and not was_down:
               minutes = int(age // 60)
-              telegram(f"⚠️ Hermes uptime alert: the Mac/gateway has not checked in for {minutes} minutes. It may be offline, rebooted, or waiting for a FileVault login.")
               request(issue_url, method="PATCH", data={"labels": ["down"]}, token=gh)
-              request(issue_url + "/comments", method="POST", data={"body": f"Alerted: heartbeat was {minutes} minutes old."}, token=gh)
+              request(issue_url + "/comments", method="POST", data={"body": f"⚠️ Alert: heartbeat was {minutes} minutes old."}, token=gh)
+              telegram(f"⚠️ Hermes uptime alert: the Mac/gateway has not checked in for {minutes} minutes. It may be offline, rebooted, or waiting for a FileVault login.")
           elif not stale and was_down:
-              telegram("✅ Hermes is back online and sending heartbeats again.")
               request(issue_url, method="PATCH", data={"labels": ["up"]}, token=gh)
-              request(issue_url + "/comments", method="POST", data={"body": "Recovery confirmed by a fresh heartbeat."}, token=gh)
+              request(issue_url + "/comments", method="POST", data={"body": "✅ Recovery confirmed by a fresh heartbeat."}, token=gh)
+              telegram("✅ Hermes is back online and sending heartbeats again.")
 
           print(json.dumps({"heartbeat_age_seconds": round(age), "stale": stale, "previously_down": was_down}))
           PY
