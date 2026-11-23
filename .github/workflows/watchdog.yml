@@ -1,0 +1,79 @@
+name: Hermes Uptime Watchdog
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: hermes-uptime-watchdog
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Check heartbeat and alert on transition
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          LAST_HEARTBEAT: ${{ vars.LAST_HEARTBEAT }}
+          CHAT_ID: "-1003716724024"
+          THREAD_ID: "1"
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request, urllib.parse
+          from datetime import datetime, timezone
+
+          def request(url, *, method="GET", data=None, token=None):
+              headers = {"Accept": "application/vnd.github+json", "User-Agent": "hermes-uptime-watchdog"}
+              if token:
+                  headers["Authorization"] = f"Bearer {token}"
+                  headers["X-GitHub-Api-Version"] = "2022-11-28"
+              body = json.dumps(data).encode() if data is not None else None
+              if body:
+                  headers["Content-Type"] = "application/json"
+              with urllib.request.urlopen(urllib.request.Request(url, data=body, headers=headers, method=method), timeout=20) as r:
+                  return json.load(r) if r.length != 0 else None
+
+          gh = os.environ["GH_TOKEN"]
+          last = datetime.fromisoformat(os.environ["LAST_HEARTBEAT"].replace("Z", "+00:00"))
+          age = (datetime.now(timezone.utc) - last).total_seconds()
+          stale = age > 600
+
+          issue_url = f"https://api.github.com/repos/{os.environ['REPO']}/issues/1"
+          issue = request(issue_url, token=gh)
+          labels = {x["name"] for x in issue.get("labels", [])}
+          was_down = "down" in labels
+
+          def telegram(text):
+              payload = urllib.parse.urlencode({
+                  "chat_id": os.environ["CHAT_ID"],
+                  "message_thread_id": os.environ["THREAD_ID"],
+                  "text": text,
+                  "disable_web_page_preview": "true",
+              }).encode()
+              url = f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage"
+              with urllib.request.urlopen(urllib.request.Request(url, data=payload, method="POST"), timeout=20) as r:
+                  response = json.load(r)
+                  if not response.get("ok"):
+                      raise RuntimeError(response)
+
+          if stale and not was_down:
+              minutes = int(age // 60)
+              telegram(f"⚠️ Hermes uptime alert: the Mac/gateway has not checked in for {minutes} minutes. It may be offline, rebooted, or waiting for a FileVault login.")
+              request(issue_url, method="PATCH", data={"labels": ["down"]}, token=gh)
+              request(issue_url + "/comments", method="POST", data={"body": f"Alerted: heartbeat was {minutes} minutes old."}, token=gh)
+          elif not stale and was_down:
+              telegram("✅ Hermes is back online and sending heartbeats again.")
+              request(issue_url, method="PATCH", data={"labels": ["up"]}, token=gh)
+              request(issue_url + "/comments", method="POST", data={"body": "Recovery confirmed by a fresh heartbeat."}, token=gh)
+
+          print(json.dumps({"heartbeat_age_seconds": round(age), "stale": stale, "previously_down": was_down}))
+          PY
